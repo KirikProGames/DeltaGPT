@@ -23,7 +23,7 @@ app.add_middleware(
 )
 
 # OpenRouter токены
-OPENROUTER_API_KEY = "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"
+OPENROUTER_API_KEY = "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"
 
 # Файлы хранения
 CHATS_FILE = "chats.json"
@@ -550,4 +550,5 @@ if __name__ == "__main__":
     print("🌐 Открой: http://localhost:8000")
     print("🔧 Debug: http://localhost:8000/debug/key")
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
 
