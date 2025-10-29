@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DELTAGPT - Advanced AI</title>
+    <link rel="stylesheet" href="/style.css">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <div class="logo-icon">Δ</div>
+                    <div class="logo-text">DELTAGPT</div>
+                </div>
+                <button class="new-chat-btn" onclick="newChat()">
+                    <i class="fas fa-plus"></i>
+                    Новый чат
+                </button>
+            </div>
+            
+            <div class="chat-history" id="chatHistory">
+                <!-- История чатов будет здесь -->
+            </div>
+            
+            <div class="sidebar-footer">
+                <div class="user-info" id="userInfo">
+                    <div class="user-avatar">
+                        <i class="fas fa-user"></i>
+                    </div>
+                    <div class="user-details">
+                        <div class="username">Гость</div>
+                        <div class="user-tier">Войдите в систему</div>
+                    </div>
+                    <button class="settings-btn" onclick="logout()" title="Выйти">
+                        <i class="fas fa-sign-out-alt"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <div class="chat-header">
+                <div class="chat-title" id="currentChatTitle">DELTAGPT</div>
+                <div class="model-indicator">
+                    <div class="status-dot"></div>
+                    <span>Delta Model v4.0</span>
+                </div>
+            </div>
+
+            <div class="chat-container">
+                <div class="chat-messages" id="chatMessages">
+                    <div class="welcome-message">
+                        <div class="welcome-icon">Δ</div>
+                        <h1>Добро пожаловать в DELTAGPT</h1>
+                        <p>Продвинутый AI ассистент с памятью контекста</p>
+                        <div class="quick-actions">
+                            <div class="quick-action" onclick="quickPrompt('Напиши код калькулятора на Python')">
+                                <i class="fas fa-calculator"></i>
+                                <span>Код калькулятора</span>
+                            </div>
+                            <div class="quick-action" onclick="quickPrompt('Объясни концепцию машинного обучения')">
+                                <i class="fas fa-brain"></i>
+                                <span>ML объяснение</span>
+                            </div>
+                            <div class="quick-action" onclick="quickPrompt('Помоги с оптимизацией кода')">
+                                <i class="fas fa-rocket"></i>
+                                <span>Оптимизация</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="chat-input-container">
+                <div class="input-wrapper">
+                    <textarea 
+                        id="userInput" 
+                        placeholder="Сообщение DELTAGPT..."
+                        rows="1"
+                    ></textarea>
+                    <div class="input-actions">
+                        <button class="send-btn" id="sendBtn" onclick="sendMessage()">
+                            <i class="fas fa-paper-plane"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="input-footer">
+                    <span class="context-info" id="contextInfo">Контекст: 0 сообщений</span>
+                    <button class="clear-context" onclick="clearContext()">
+                        <i class="fas fa-eraser"></i>
+                        Очистить контекст
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Auth Modal -->
+    <div class="auth-overlay" id="authOverlay" style="display: flex;">
+        <div class="auth-container">
+            <div class="auth-header">
+                <div class="auth-title">DELTAGPT</div>
+                <div class="auth-subtitle">Войдите в свою учетную запись</div>
+            </div>
+            
+            <div class="auth-form active" id="loginForm">
+                <input type="text" id="loginUsername" placeholder="Имя пользователя" class="auth-input" value="AmebaSCM">
+                <input type="password" id="loginPassword" placeholder="Пароль" class="auth-input">
+                <button class="auth-btn" onclick="login()">Войти</button>
+                <div class="auth-switch">
+                    Нет аккаунта? <span onclick="showRegister()">Зарегистрироваться</span>
+                </div>
+            </div>
+            
+            <div class="auth-form" id="registerForm">
+                <input type="text" id="regUsername" placeholder="Имя пользователя" class="auth-input">
+                <input type="email" id="regEmail" placeholder="Email" class="auth-input">
+                <input type="password" id="regPassword" placeholder="Пароль" class="auth-input">
+                <button class="auth-btn" onclick="register()">Создать аккаунт</button>
+                <div class="auth-switch">
+                    Есть аккаунт? <span onclick="showLogin()">Войти</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/script.js"></script>
+</body>
+</html>

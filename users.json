@@ -1,0 +1,15 @@
+{
+  "users": {
+    "AmebaSCM": {
+      "id": "79ee4a2f4be8cdbf",
+      "password": "013c4875fe6972d6a12389674baffd6866094649cfae5e3689262bb59a655405",
+      "email": "pereskokovkirill21@gmail.com",
+      "tier": "free",
+      "created_at": "2025-10-29T10:22:25.807766",
+      "last_login": "2025-10-29T16:31:24.901289",
+      "images_uploaded_today": 0,
+      "last_upload_date": "2025-10-29T10:22:25.807790",
+      "total_requests": 0
+    }
+  }
+}
