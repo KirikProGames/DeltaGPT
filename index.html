@@ -3,9 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DELTAGPT - Advanced AI</title>
+    <title>DELTAGPT - Advanced AI Assistant</title>
     <link rel="stylesheet" href="/style.css">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
     <div class="app-container">
@@ -28,12 +29,12 @@
             
             <div class="sidebar-footer">
                 <div class="user-info" id="userInfo">
-                    <div class="user-avatar">
+                    <div class="user-avatar" id="userAvatar">
                         <i class="fas fa-user"></i>
                     </div>
                     <div class="user-details">
-                        <div class="username">Гость</div>
-                        <div class="user-tier">Войдите в систему</div>
+                        <div class="username" id="sidebarUsername">Гость</div>
+                        <div class="user-tier" id="sidebarTier">Войдите в систему</div>
                     </div>
                     <button class="settings-btn" onclick="logout()" title="Выйти">
                         <i class="fas fa-sign-out-alt"></i>
@@ -46,9 +47,14 @@
         <div class="main-content">
             <div class="chat-header">
                 <div class="chat-title" id="currentChatTitle">DELTAGPT</div>
-                <div class="model-indicator">
-                    <div class="status-dot"></div>
-                    <span>Delta Model v4.0</span>
+                <div class="header-actions">
+                    <div class="model-indicator">
+                        <div class="status-dot"></div>
+                        <span>Delta Model v4.0</span>
+                    </div>
+                    <button class="header-btn" onclick="exportChat()" title="Экспорт чата">
+                        <i class="fas fa-download"></i>
+                    </button>
                 </div>
             </div>
 
@@ -57,19 +63,33 @@
                     <div class="welcome-message">
                         <div class="welcome-icon">Δ</div>
                         <h1>Добро пожаловать в DELTAGPT</h1>
-                        <p>Продвинутый AI ассистент с памятью контекста</p>
+                        <p>Продвинутый AI ассистент с расширенной памятью</p>
+                        
+                        <div class="thinking-mode-selector">
+                            <label>Режим мышления:</label>
+                            <select id="thinkingMode">
+                                <option value="fast">🚀 Быстрый ответ</option>
+                                <option value="deep">🧠 Глубокое мышление</option>
+                                <option value="creative">🎨 Креативный режим</option>
+                            </select>
+                        </div>
+
                         <div class="quick-actions">
-                            <div class="quick-action" onclick="quickPrompt('Напиши код калькулятора на Python')">
+                            <div class="quick-action" onclick="quickPrompt('Напиши код современного калькулятора на React')">
                                 <i class="fas fa-calculator"></i>
-                                <span>Код калькулятора</span>
+                                <span>React калькулятор</span>
                             </div>
-                            <div class="quick-action" onclick="quickPrompt('Объясни концепцию машинного обучения')">
+                            <div class="quick-action" onclick="quickPrompt('Объясни трансформеры в машинном обучении')">
                                 <i class="fas fa-brain"></i>
-                                <span>ML объяснение</span>
+                                <span>Трансформеры</span>
                             </div>
-                            <div class="quick-action" onclick="quickPrompt('Помоги с оптимизацией кода')">
+                            <div class="quick-action" onclick="quickPrompt('Создай план проекта веб-приложения')">
                                 <i class="fas fa-rocket"></i>
-                                <span>Оптимизация</span>
+                                <span>План проекта</span>
+                            </div>
+                            <div class="quick-action" onclick="quickPrompt('Напиши Python скрипт для анализа данных')">
+                                <i class="fas fa-chart-line"></i>
+                                <span>Анализ данных</span>
                             </div>
                         </div>
                     </div>
@@ -84,17 +104,28 @@
                         rows="1"
                     ></textarea>
                     <div class="input-actions">
+                        <button class="action-btn" onclick="toggleVoiceInput()" title="Голосовой ввод">
+                            <i class="fas fa-microphone"></i>
+                        </button>
+                        <button class="action-btn" onclick="attachFile()" title="Прикрепить файл">
+                            <i class="fas fa-paperclip"></i>
+                        </button>
                         <button class="send-btn" id="sendBtn" onclick="sendMessage()">
                             <i class="fas fa-paper-plane"></i>
                         </button>
                     </div>
                 </div>
                 <div class="input-footer">
-                    <span class="context-info" id="contextInfo">Контекст: 0 сообщений</span>
-                    <button class="clear-context" onclick="clearContext()">
-                        <i class="fas fa-eraser"></i>
-                        Очистить контекст
-                    </button>
+                    <div class="footer-left">
+                        <span class="context-info" id="contextInfo">Контекст: 0 сообщений</span>
+                        <span class="token-info" id="tokenInfo">Токены: 0</span>
+                    </div>
+                    <div class="footer-right">
+                        <button class="clear-context" onclick="clearContext()">
+                            <i class="fas fa-eraser"></i>
+                            Очистить контекст
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -104,14 +135,42 @@
     <div class="auth-overlay" id="authOverlay" style="display: flex;">
         <div class="auth-container">
             <div class="auth-header">
+                <div class="auth-logo">
+                    <div class="logo-icon">Δ</div>
+                </div>
                 <div class="auth-title">DELTAGPT</div>
                 <div class="auth-subtitle">Войдите в свою учетную запись</div>
             </div>
             
             <div class="auth-form active" id="loginForm">
-                <input type="text" id="loginUsername" placeholder="Имя пользователя" class="auth-input" value="AmebaSCM">
+                <div class="google-auth-section">
+                    <div id="g_id_onload"
+                         data-client_id="YOUR_GOOGLE_CLIENT_ID"
+                         data-context="signin"
+                         data-ux_mode="popup"
+                         data-callback="handleGoogleSignIn"
+                         data-auto_prompt="false">
+                    </div>
+                    <div class="g_id_signin"
+                         data-type="standard"
+                         data-shape="rectangular"
+                         data-theme="filled_blue"
+                         data-text="signin_with"
+                         data-size="large"
+                         data-logo_alignment="left">
+                    </div>
+                </div>
+                
+                <div class="auth-divider">
+                    <span>или через email</span>
+                </div>
+                
+                <input type="text" id="loginUsername" placeholder="Имя пользователя" class="auth-input">
                 <input type="password" id="loginPassword" placeholder="Пароль" class="auth-input">
-                <button class="auth-btn" onclick="login()">Войти</button>
+                <button class="auth-btn" onclick="login()">
+                    <i class="fas fa-sign-in-alt"></i>
+                    Войти
+                </button>
                 <div class="auth-switch">
                     Нет аккаунта? <span onclick="showRegister()">Зарегистрироваться</span>
                 </div>
@@ -121,9 +180,43 @@
                 <input type="text" id="regUsername" placeholder="Имя пользователя" class="auth-input">
                 <input type="email" id="regEmail" placeholder="Email" class="auth-input">
                 <input type="password" id="regPassword" placeholder="Пароль" class="auth-input">
-                <button class="auth-btn" onclick="register()">Создать аккаунт</button>
+                <button class="auth-btn" onclick="register()">
+                    <i class="fas fa-user-plus"></i>
+                    Создать аккаунт
+                </button>
                 <div class="auth-switch">
                     Есть аккаунт? <span onclick="showLogin()">Войти</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div class="modal-overlay" id="settingsModal">
+        <div class="modal-container">
+            <div class="modal-header">
+                <h3>Настройки</h3>
+                <button class="modal-close" onclick="closeSettings()">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="modal-content">
+                <div class="setting-group">
+                    <label>Скорость печати</label>
+                    <select id="typingSpeed">
+                        <option value="5">Очень быстрая</option>
+                        <option value="10" selected>Быстрая</option>
+                        <option value="20">Средняя</option>
+                        <option value="30">Медленная</option>
+                    </select>
+                </div>
+                <div class="setting-group">
+                    <label>Тема интерфейса</label>
+                    <select id="themeSelect">
+                        <option value="dark">Темная</option>
+                        <option value="light">Светлая</option>
+                        <option value="auto">Авто</option>
+                    </select>
                 </div>
             </div>
         </div>
