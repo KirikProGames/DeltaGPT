@@ -8,10 +8,10 @@ import json
 import uuid
 import hashlib
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import List, Dict, Optional
 import uvicorn
-from openai import OpenAI
+import httpx
 
 app = FastAPI(title="DELTAGPT - Advanced AI Assistant")
 
@@ -23,9 +23,7 @@ app.add_middleware(
 )
 
 # OpenRouter токены
-OPENROUTER_TOKENS = [
-    "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"
-]
+OPENROUTER_API_KEY = "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"
 
 # Файлы хранения
 CHATS_FILE = "chats.json"
@@ -252,20 +250,15 @@ class DeltaGPT:
     def estimate_tokens(self, text: str) -> int:
         return len(text) // 4
     
-    def chat_completion(self, messages: List[Dict], chat_id: str = None, username: str = None, thinking_mode: str = "fast") -> Dict:
+    async def chat_completion(self, messages: List[Dict], chat_id: str = None, username: str = None, thinking_mode: str = "fast") -> Dict:
         try:
             mode_settings = {
-                "fast": {"max_tokens": 2000, "temperature": 0.7, "model": "google/gemini-2.0-flash-exp:free"},
-                "deep": {"max_tokens": 4000, "temperature": 0.3, "model": "microsoft/wizardlm-2-8x22b:free"},
-                "creative": {"max_tokens": 3000, "temperature": 0.9, "model": "qwen/qwen-2.5-72b-instruct:free"}
+                "fast": {"max_tokens": 2000, "temperature": 0.7},
+                "deep": {"max_tokens": 4000, "temperature": 0.3},
+                "creative": {"max_tokens": 3000, "temperature": 0.9}
             }
             
             settings = mode_settings.get(thinking_mode, mode_settings["fast"])
-            
-            client = OpenAI(
-                base_url="https://openrouter.ai/api/v1",
-                api_key=OPENROUTER_TOKENS[0],
-            )
             
             system_prompt = """Ты DELTAGPT - мощный AI ассистент. Отвечай подробно и помогай пользователям.
 Всегда отвечай на русском языке. Будь полезным и дружелюбным.
@@ -280,49 +273,60 @@ class DeltaGPT:
                 })
             
             models_to_try = [
-                settings["model"],
                 "google/gemini-2.0-flash-exp:free",
                 "meta-llama/llama-3-8b-instruct:free", 
                 "microsoft/wizardlm-2-8x22b:free",
                 "qwen/qwen-2.5-72b-instruct:free"
             ]
             
-            for model in models_to_try:
-                try:
-                    print(f"🔄 Пробуем модель: {model} (режим: {thinking_mode})")
-                    
-                    completion = client.chat.completions.create(
-                        model=model,
-                        messages=openai_messages,
-                        max_tokens=settings["max_tokens"],
-                        temperature=settings["temperature"],
-                        extra_headers={
-                            "HTTP-Referer": "http://localhost:8000",
-                            "X-Title": "DELTAGPT",
-                        }
-                    )
-                    
-                    assistant_message = completion.choices[0].message.content
-                    tokens_used = completion.usage.total_tokens if completion.usage else self.estimate_tokens(assistant_message)
-                    
-                    if username:
-                        self.user_manager.update_user_stats(username, tokens_used)
-                    
-                    if chat_id:
-                        self.add_message(chat_id, "assistant", assistant_message, username, tokens_used)
-                    
-                    return {
-                        "success": True,
-                        "response": assistant_message,
-                        "model": model,
-                        "tokens_used": tokens_used,
-                        "context_length": len(messages),
-                        "thinking_mode": thinking_mode
-                    }
-                    
-                except Exception as e:
-                    print(f"❌ Модель {model} не сработала: {str(e)}")
-                    continue
+            async with httpx.AsyncClient() as client:
+                for model in models_to_try:
+                    try:
+                        print(f"🔄 Пробуем модель: {model} (режим: {thinking_mode})")
+                        
+                        response = await client.post(
+                            "https://openrouter.ai/api/v1/chat/completions",
+                            headers={
+                                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                                "Content-Type": "application/json",
+                                "HTTP-Referer": "https://deltagpt.onrender.com",
+                                "X-Title": "DELTAGPT"
+                            },
+                            json={
+                                "model": model,
+                                "messages": openai_messages,
+                                "max_tokens": settings["max_tokens"],
+                                "temperature": settings["temperature"]
+                            },
+                            timeout=30.0
+                        )
+                        
+                        if response.status_code == 200:
+                            data = response.json()
+                            assistant_message = data["choices"][0]["message"]["content"]
+                            tokens_used = data.get("usage", {}).get("total_tokens", self.estimate_tokens(assistant_message))
+                            
+                            if username:
+                                self.user_manager.update_user_stats(username, tokens_used)
+                            
+                            if chat_id:
+                                self.add_message(chat_id, "assistant", assistant_message, username, tokens_used)
+                            
+                            return {
+                                "success": True,
+                                "response": assistant_message,
+                                "model": model,
+                                "tokens_used": tokens_used,
+                                "context_length": len(messages),
+                                "thinking_mode": thinking_mode
+                            }
+                        else:
+                            print(f"❌ Модель {model} вернула ошибку: {response.status_code}")
+                            continue
+                            
+                    except Exception as e:
+                        print(f"❌ Модель {model} не сработала: {str(e)}")
+                        continue
             
             return {
                 "success": False,
@@ -424,7 +428,7 @@ async def chat_api(request: Request):
         
         history = deltagpt.get_chat_history(chat_id)
         
-        result = deltagpt.chat_completion(history, chat_id, username, thinking_mode)
+        result = await deltagpt.chat_completion(history, chat_id, username, thinking_mode)
         result["chat_id"] = chat_id
         
         return JSONResponse(result)
