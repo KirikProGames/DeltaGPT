@@ -4,8 +4,9 @@ class DeltaGPTApp {
         this.chats = [];
         this.isProcessing = false;
         this.currentUser = null;
-        this.thinkingMode = 'fast'; // 'fast' или 'deep'
-        this.typingSpeed = 10; // Скорость печати (мс на символ)
+        this.accessToken = null;
+        this.thinkingMode = 'fast';
+        this.typingSpeed = 10;
         this.init();
     }
 
@@ -33,19 +34,42 @@ class DeltaGPTApp {
             this.style.height = (this.scrollHeight) + 'px';
         });
 
-        // Переключение режима мышления
         document.addEventListener('change', (e) => {
             if (e.target.id === 'thinkingMode') {
                 this.thinkingMode = e.target.value;
-                this.showNotification(`Режим: ${e.target.value === 'deep' ? 'Глубокое мышление' : 'Быстрый ответ'}`, 'info');
+                this.showNotification(`Режим: ${this.getThinkingModeName(e.target.value)}`, 'info');
+            }
+            if (e.target.id === 'typingSpeed') {
+                this.typingSpeed = parseInt(e.target.value);
+                this.showNotification(`Скорость печати изменена`, 'info');
+            }
+            if (e.target.id === 'themeSelect') {
+                this.changeTheme(e.target.value);
             }
         });
     }
 
+    getThinkingModeName(mode) {
+        const modes = {
+            'fast': 'Быстрый ответ',
+            'deep': 'Глубокое мышление', 
+            'creative': 'Креативный режим'
+        };
+        return modes[mode] || mode;
+    }
+
+    changeTheme(theme) {
+        document.body.setAttribute('data-theme', theme);
+        this.showNotification(`Тема изменена на: ${theme}`, 'info');
+    }
+
     async checkAuth() {
         const savedUser = localStorage.getItem('deltagpt_user');
-        if (savedUser) {
+        const savedToken = localStorage.getItem('deltagpt_token');
+        
+        if (savedUser && savedToken) {
             this.currentUser = JSON.parse(savedUser);
+            this.accessToken = savedToken;
             this.updateUserInfo();
             return true;
         }
@@ -90,6 +114,8 @@ class DeltaGPTApp {
             
             if (data.success) {
                 this.currentUser = data.user;
+                this.accessToken = data.access_token;
+                this.saveAuthData();
                 this.hideAuthModal();
                 this.showNotification('Успешный вход!', 'success');
                 await this.loadChats();
@@ -136,23 +162,88 @@ class DeltaGPTApp {
         }
     }
 
+    // Google OAuth handler
+    async handleGoogleSignIn(response) {
+        try {
+            const authResponse = await fetch('/auth/google', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    token: response.credential,
+                    profile: this.decodeJWT(response.credential)
+                })
+            });
+
+            const data = await authResponse.json();
+            
+            if (data.success) {
+                this.currentUser = data.user;
+                this.accessToken = data.access_token;
+                this.saveAuthData();
+                this.hideAuthModal();
+                this.showNotification('Google вход успешен!', 'success');
+                await this.loadChats();
+                this.showWelcome();
+                this.updateUserInfo();
+            } else {
+                this.showNotification(data.message, 'error');
+            }
+        } catch (error) {
+            this.showNotification('Ошибка Google входа', 'error');
+        }
+    }
+
+    decodeJWT(token) {
+        try {
+            const base64Url = token.split('.')[1];
+            const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+            const jsonPayload = decodeURIComponent(atob(base64).split('').map(function(c) {
+                return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+            }).join(''));
+            return JSON.parse(jsonPayload);
+        } catch (error) {
+            return {};
+        }
+    }
+
+    saveAuthData() {
+        localStorage.setItem('deltagpt_user', JSON.stringify(this.currentUser));
+        localStorage.setItem('deltagpt_token', this.accessToken);
+    }
+
     updateUserInfo() {
         if (this.currentUser) {
             document.getElementById('sidebarUsername').textContent = this.currentUser.username;
-            document.getElementById('sidebarTier').textContent = `Тип: ${this.currentUser.tier || 'Free'}`;
-            localStorage.setItem('deltagpt_user', JSON.stringify(this.currentUser));
+            document.getElementById('sidebarTier').textContent = `Тип: ${this.currentUser.tier === 'premium' ? 'Премиум' : 'Бесплатный'}`;
+            
+            const userAvatar = document.getElementById('userAvatar');
+            if (this.currentUser.avatar) {
+                userAvatar.innerHTML = `<img src="${this.currentUser.avatar}" alt="${this.currentUser.username}" style="width:100%;height:100%;border-radius:10px;">`;
+            } else {
+                userAvatar.innerHTML = `<i class="fas fa-user"></i>`;
+            }
         }
     }
 
     logout() {
         this.currentUser = null;
+        this.accessToken = null;
         localStorage.removeItem('deltagpt_user');
+        localStorage.removeItem('deltagpt_token');
         this.showAuthModal();
         this.clearChatMessages();
         this.chats = [];
         this.renderChatHistory();
         document.getElementById('sidebarUsername').textContent = 'Гость';
         document.getElementById('sidebarTier').textContent = 'Войдите в систему';
+        document.getElementById('userAvatar').innerHTML = '<i class="fas fa-user"></i>';
+    }
+
+    getAuthHeaders() {
+        return {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${this.accessToken}`
+        };
     }
 
     showNotification(message, type) {
@@ -162,25 +253,31 @@ class DeltaGPTApp {
             position: fixed;
             top: 20px;
             right: 20px;
-            padding: 12px 20px;
-            border-radius: 10px;
+            padding: 16px 24px;
+            border-radius: 12px;
             color: white;
             z-index: 10000;
-            background: ${type === 'success' ? '#10b981' : type === 'error' ? '#ef4444' : '#3b82f6'};
-            animation: slideIn 0.3s ease;
+            background: ${type === 'success' ? 'rgba(16, 185, 129, 0.9)' : type === 'error' ? 'rgba(239, 68, 68, 0.9)' : 'rgba(59, 130, 246, 0.9)'};
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255,255,255,0.1);
         `;
         
         notification.textContent = message;
         document.body.appendChild(notification);
         
         setTimeout(() => {
-            notification.remove();
+            notification.style.animation = 'slideInRight 0.3s ease reverse';
+            setTimeout(() => notification.remove(), 300);
         }, 3000);
     }
 
     async loadChats() {
+        if (!this.currentUser) return;
+        
         try {
-            const response = await fetch(`/api/chats/user/${this.currentUser.username}`);
+            const response = await fetch(`/api/chats/user/${this.currentUser.username}`, {
+                headers: this.getAuthHeaders()
+            });
             const data = await response.json();
             
             if (data.success) {
@@ -197,12 +294,12 @@ class DeltaGPTApp {
         this.clearChatMessages();
         this.showWelcome();
         this.updateChatTitle('DELTAGPT');
-        this.updateContextInfo(0);
+        this.updateContextInfo(0, 0);
     }
 
     async sendMessage() {
         if (this.isProcessing || !this.currentUser) {
-            this.showAuthModal();
+            if (!this.currentUser) this.showAuthModal();
             return;
         }
 
@@ -215,22 +312,19 @@ class DeltaGPTApp {
         this.updateSendButton();
 
         this.hideWelcome();
-
         this.addMessage(message, 'user');
         input.value = '';
         this.resetTextarea();
 
-        // Показываем анимацию мышления
         this.showThinkingAnimation();
 
         try {
             const response = await fetch('/api/chat', {
                 method: 'POST',
-                headers: {'Content-Type': 'application/json'},
+                headers: this.getAuthHeaders(),
                 body: JSON.stringify({
                     message: message,
                     chat_id: this.currentChatId,
-                    username: this.currentUser.username,
                     thinking_mode: this.thinkingMode
                 })
             });
@@ -240,13 +334,17 @@ class DeltaGPTApp {
             this.removeThinkingAnimation();
             
             if (data.success) {
-                // Очищаем текст от разметки и анимируем печать
                 const cleanText = this.cleanText(data.response);
                 await this.typeMessage(cleanText, 'assistant');
                 this.currentChatId = data.chat_id;
                 
                 await this.loadChats();
-                this.updateContextInfo(data.context_length);
+                this.updateContextInfo(data.context_length, data.tokens_used);
+                
+                if (data.thinking_mode !== this.thinkingMode) {
+                    this.thinkingMode = data.thinking_mode;
+                    this.updateThinkingModeSelector();
+                }
             } else {
                 this.addMessage(`❌ ${data.response}`, 'assistant');
             }
@@ -260,21 +358,19 @@ class DeltaGPTApp {
         }
     }
 
-    // Очистка текста от разметки
     cleanText(text) {
         return text
-            .replace(/\*\*(.*?)\*\*/g, '$1') // Убираем **жирный**
-            .replace(/\*(.*?)\*/g, '$1')     // Убираем *курсив*
-            .replace(/_(.*?)_/g, '$1')       // Убираем _подчеркивание_
-            .replace(/`(.*?)`/g, '$1')       // Убираем `код`
-            .replace(/#{1,6}\s?/g, '')       // Убираем заголовки ###
-            .replace(/\[(.*?)\]\(.*?\)/g, '$1') // Убираем ссылки [текст](url)
-            .replace(/<\/?[^>]+(>|$)/g, '')  // Убираем HTML теги
-            .replace(/\n{3,}/g, '\n\n')      // Убираем лишние переносы
+            .replace(/\*\*(.*?)\*\*/g, '$1')
+            .replace(/\*(.*?)\*/g, '$1')
+            .replace(/_(.*?)_/g, '$1')
+            .replace(/`(.*?)`/g, '$1')
+            .replace(/#{1,6}\s?/g, '')
+            .replace(/\[(.*?)\]\(.*?\)/g, '$1')
+            .replace(/<\/?[^>]+(>|$)/g, '')
+            .replace(/\n{3,}/g, '\n\n')
             .trim();
     }
 
-    // Анимация печати текста
     async typeMessage(text, sender) {
         const messagesContainer = document.getElementById('chatMessages');
         
@@ -302,7 +398,6 @@ class DeltaGPTApp {
         messageDiv.appendChild(messageContainer);
         messagesContainer.appendChild(messageDiv);
         
-        // Анимация печати
         let index = 0;
         const typingInterval = setInterval(() => {
             if (index < text.length) {
@@ -311,6 +406,7 @@ class DeltaGPTApp {
                 messagesContainer.scrollTop = messagesContainer.scrollHeight;
             } else {
                 clearInterval(typingInterval);
+                textDiv.innerHTML = this.processContent(textDiv.innerHTML);
                 this.addCopyButtonListeners();
             }
         }, this.typingSpeed);
@@ -347,12 +443,10 @@ class DeltaGPTApp {
         messagesContainer.appendChild(messageDiv);
         
         messagesContainer.scrollTop = messagesContainer.scrollHeight;
-        
         this.addCopyButtonListeners();
     }
 
     processContent(text) {
-        // Обработка код-блоков (оставляем только их)
         let processed = text.replace(/```(\w+)?\n([\s\S]*?)```/g, (match, lang, code) => {
             const language = lang || 'text';
             return `
@@ -370,7 +464,6 @@ class DeltaGPTApp {
             `;
         });
 
-        // Обработка переносов строк
         processed = processed.replace(/\n/g, '<br>');
         return processed;
     }
@@ -383,7 +476,9 @@ class DeltaGPTApp {
 
     async loadChat(chatId) {
         try {
-            const response = await fetch(`/api/chat/${chatId}`);
+            const response = await fetch(`/api/chat/${chatId}`, {
+                headers: this.getAuthHeaders()
+            });
             const data = await response.json();
             
             if (data.success) {
@@ -395,10 +490,12 @@ class DeltaGPTApp {
                 });
                 
                 this.currentChatId = chatId;
-                this.updateContextInfo(data.messages.length);
+                this.updateContextInfo(data.messages.length, data.chat_info?.total_tokens || 0);
                 
                 if (data.chat_info) {
                     this.updateChatTitle(data.chat_info.title);
+                    this.thinkingMode = data.chat_info.thinking_mode || 'fast';
+                    this.updateThinkingModeSelector();
                 }
             }
             
@@ -419,7 +516,11 @@ class DeltaGPTApp {
             chatItem.innerHTML = `
                 <div class="chat-history-title">${chat.title}</div>
                 <div class="chat-history-preview">${this.getChatPreview(chat.last_message)}</div>
-                <div class="chat-history-meta">${this.formatDate(chat.updated_at)} • ${chat.message_count} сообщ.</div>
+                <div class="chat-history-meta">
+                    ${this.formatDate(chat.updated_at)} • 
+                    ${chat.message_count} сообщ. • 
+                    ${this.formatTokens(chat.total_tokens)}
+                </div>
             `;
             
             historyContainer.appendChild(chatItem);
@@ -444,36 +545,56 @@ class DeltaGPTApp {
         return date.toLocaleDateString('ru-RU');
     }
 
+    formatTokens(tokens) {
+        if (tokens < 1000) return `${tokens} токенов`;
+        return `${(tokens / 1000).toFixed(1)}K токенов`;
+    }
+
     showWelcome() {
         const messagesContainer = document.getElementById('chatMessages');
         messagesContainer.innerHTML = `
             <div class="welcome-message">
                 <div class="welcome-icon">Δ</div>
                 <h1>Добро пожаловать в DELTAGPT</h1>
-                <p>Продвинутый AI ассистент с памятью контекста</p>
+                <p>Продвинутый AI ассистент с расширенной памятью</p>
+                
                 <div class="thinking-mode-selector">
                     <label>Режим мышления:</label>
                     <select id="thinkingMode">
                         <option value="fast">🚀 Быстрый ответ</option>
                         <option value="deep">🧠 Глубокое мышление</option>
+                        <option value="creative">🎨 Креативный режим</option>
                     </select>
                 </div>
+
                 <div class="quick-actions">
-                    <div class="quick-action" onclick="quickPrompt('Напиши код калькулятора на Python')">
+                    <div class="quick-action" onclick="quickPrompt('Напиши код современного калькулятора на React')">
                         <i class="fas fa-calculator"></i>
-                        <span>Код калькулятора</span>
+                        <span>React калькулятор</span>
                     </div>
-                    <div class="quick-action" onclick="quickPrompt('Объясни концепцию машинного обучения')">
+                    <div class="quick-action" onclick="quickPrompt('Объясни трансформеры в машинном обучении')">
                         <i class="fas fa-brain"></i>
-                        <span>ML объяснение</span>
+                        <span>Трансформеры</span>
                     </div>
-                    <div class="quick-action" onclick="quickPrompt('Помоги с оптимизацией кода')">
+                    <div class="quick-action" onclick="quickPrompt('Создай план проекта веб-приложения')">
                         <i class="fas fa-rocket"></i>
-                        <span>Оптимизация</span>
+                        <span>План проекта</span>
+                    </div>
+                    <div class="quick-action" onclick="quickPrompt('Напиши Python скрипт для анализа данных')">
+                        <i class="fas fa-chart-line"></i>
+                        <span>Анализ данных</span>
                     </div>
                 </div>
             </div>
         `;
+        this.updateThinkingModeSelector();
+    }
+
+    updateThinkingModeSelector() {
+        const selector = document.getElementById('thinkingMode');
+        if (selector) {
+            selector.value = this.thinkingMode;
+        }
     }
 
     hideWelcome() {
@@ -487,7 +608,6 @@ class DeltaGPTApp {
         document.getElementById('chatMessages').innerHTML = '';
     }
 
-    // Анимация мышления
     showThinkingAnimation() {
         const messagesContainer = document.getElementById('chatMessages');
         const thinkingDiv = document.createElement('div');
@@ -509,8 +629,7 @@ class DeltaGPTApp {
         
         const thinkingText = document.createElement('div');
         thinkingText.className = 'thinking-text';
-        thinkingText.textContent = this.thinkingMode === 'deep' ? 
-            '🧠 Думаю глубоко...' : '⚡ Думаю...';
+        thinkingText.textContent = this.getThinkingAnimationText();
         
         const dots = document.createElement('div');
         dots.className = 'thinking-dots';
@@ -528,6 +647,15 @@ class DeltaGPTApp {
         thinkingDiv.appendChild(messageContainer);
         messagesContainer.appendChild(thinkingDiv);
         messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+
+    getThinkingAnimationText() {
+        const texts = {
+            'fast': '⚡ Думаю...',
+            'deep': '🧠 Думаю глубоко...',
+            'creative': '🎨 Думаю креативно...'
+        };
+        return texts[this.thinkingMode] || 'Думаю...';
     }
 
     removeThinkingAnimation() {
@@ -552,8 +680,9 @@ class DeltaGPTApp {
         document.getElementById('currentChatTitle').textContent = title;
     }
 
-    updateContextInfo(count) {
-        document.getElementById('contextInfo').textContent = `Контекст: ${count} сообщений`;
+    updateContextInfo(messageCount, tokenCount) {
+        document.getElementById('contextInfo').textContent = `Контекст: ${messageCount} сообщений`;
+        document.getElementById('tokenInfo').textContent = `Токены: ${this.formatTokens(tokenCount)}`;
     }
 
     resetTextarea() {
@@ -569,6 +698,37 @@ class DeltaGPTApp {
                 copyCodeToClipboard(this, code);
             });
         });
+    }
+
+    async exportChat() {
+        if (!this.currentChatId) {
+            this.showNotification('Нет активного чата для экспорта', 'error');
+            return;
+        }
+
+        try {
+            const response = await fetch(`/api/chat/${this.currentChatId}/export`, {
+                headers: this.getAuthHeaders()
+            });
+            const data = await response.json();
+            
+            if (data.success) {
+                const blob = new Blob([JSON.stringify(data.export_data, null, 2)], {type: 'application/json'});
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = data.filename;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                this.showNotification('Чат экспортирован!', 'success');
+            } else {
+                this.showNotification(data.message, 'error');
+            }
+        } catch (error) {
+            this.showNotification('Ошибка экспорта', 'error');
+        }
     }
 }
 
@@ -624,13 +784,41 @@ function copyCodeToClipboard(button, text = null) {
 
 function clearContext() {
     if (deltagptApp.currentChatId) {
-        fetch(`/api/chat/${deltagptApp.currentChatId}/clear`, { method: 'POST' })
+        fetch(`/api/chat/${deltagptApp.currentChatId}/clear`, { 
+            method: 'POST',
+            headers: deltagptApp.getAuthHeaders()
+        })
             .then(() => {
                 deltagptApp.clearChatMessages();
                 deltagptApp.showWelcome();
-                deltagptApp.updateContextInfo(0);
+                deltagptApp.updateContextInfo(0, 0);
             });
     }
+}
+
+function exportChat() {
+    deltagptApp.exportChat();
+}
+
+function toggleVoiceInput() {
+    deltagptApp.showNotification('Голосовой ввод в разработке', 'info');
+}
+
+function attachFile() {
+    deltagptApp.showNotification('Прикрепление файлов в разработке', 'info');
+}
+
+function openSettings() {
+    document.getElementById('settingsModal').style.display = 'flex';
+}
+
+function closeSettings() {
+    document.getElementById('settingsModal').style.display = 'none';
+}
+
+// Google OAuth callback
+function handleGoogleSignIn(response) {
+    deltagptApp.handleGoogleSignIn(response);
 }
 
 // Инициализация приложения
