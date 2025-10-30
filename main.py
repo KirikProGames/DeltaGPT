@@ -11,7 +11,7 @@ import secrets
 from datetime import datetime
 from typing import List, Dict, Optional
 import uvicorn
-import requests
+import httpx  # ← Меняем requests на httpx для async
 
 app = FastAPI(title="DELTAGPT - Advanced AI Assistant")
 
@@ -268,7 +268,7 @@ class DeltaGPT:
     def estimate_tokens(self, text: str) -> int:
         return len(text) // 4
     
-    def chat_completion(self, messages: List[Dict], chat_id: str = None, username: str = None, thinking_mode: str = "fast") -> Dict:
+    async def chat_completion(self, messages: List[Dict], chat_id: str = None, username: str = None, thinking_mode: str = "fast") -> Dict:
         try:
             if not OPENROUTER_KEYS:
                 return {
@@ -280,9 +280,9 @@ class DeltaGPT:
                 }
             
             mode_settings = {
-                "fast": {"max_tokens": 8000, "temperature": 0.7},
-                "deep": {"max_tokens": 16000, "temperature": 0.3},
-                "creative": {"max_tokens": 12000, "temperature": 0.9}
+                "fast": {"max_tokens": 4000, "temperature": 0.7},
+                "deep": {"max_tokens": 8000, "temperature": 0.3},
+                "creative": {"max_tokens": 6000, "temperature": 0.9}
             }
             
             settings = mode_settings.get(thinking_mode, mode_settings["fast"])
@@ -293,77 +293,73 @@ class DeltaGPT:
             
             openai_messages = [{"role": "system", "content": system_prompt}]
             
-            for msg in messages[-15:]:
+            for msg in messages[-10:]:  # Уменьшим контекст для стабильности
                 openai_messages.append({
                     "role": msg["role"],
                     "content": msg["content"]
                 })
             
-            # Мощные модели для GPT-5 ключа
+            # Стабильные бесплатные модели
             models_to_try = [
-                "openai/gpt-4",
-                "openai/gpt-4-turbo", 
-                "openai/gpt-3.5-turbo",
                 "google/gemini-2.0-flash-exp:free",
-                "anthropic/claude-3.5-sonnet:free",
-                "meta-llama/llama-3.1-70b-instruct"
+                "meta-llama/llama-3.1-8b-instruct:free", 
+                "microsoft/wizardlm-2-8x22b:free",
+                "nvidia/nemotron-nano-12b-v2-vl:free"
             ]
             
-            for model in models_to_try:
-                try:
-                    print(f"🔄 Пробуем модель: {model} (режим: {thinking_mode})")
-                    
-                    api_key = self.get_api_key()
-                    
-                    response = requests.post(
-                        url="https://openrouter.ai/api/v1/chat/completions",
-                        headers={
-                            "Authorization": f"Bearer {api_key}",
-                            "Content-Type": "application/json",
-                            "HTTP-Referer": "https://deltagpt.onrender.com",
-                            "X-Title": "DELTAGPT",
-                        },
-                        json={
-                            "model": model,
-                            "messages": openai_messages,
-                            "max_tokens": settings["max_tokens"],
-                            "temperature": settings["temperature"],
-                            "top_p": 0.9,
-                            "frequency_penalty": 0.1,
-                            "presence_penalty": 0.1
-                        },
-                        timeout=30
-                    )
-                    
-                    print(f"📥 Ответ от {model}: {response.status_code}")
-                    
-                    if response.status_code == 200:
-                        data = response.json()
-                        assistant_message = data["choices"][0]["message"]["content"]
-                        tokens_used = data.get("usage", {}).get("total_tokens", self.estimate_tokens(assistant_message))
+            async with httpx.AsyncClient() as client:
+                for model in models_to_try:
+                    try:
+                        print(f"🔄 Пробуем модель: {model} (режим: {thinking_mode})")
                         
-                        if username:
-                            self.user_manager.update_user_stats(username, tokens_used)
+                        api_key = self.get_api_key()
                         
-                        if chat_id:
-                            self.add_message(chat_id, "assistant", assistant_message, username, tokens_used)
+                        response = await client.post(
+                            url="https://openrouter.ai/api/v1/chat/completions",
+                            headers={
+                                "Authorization": f"Bearer {api_key}",
+                                "Content-Type": "application/json",
+                                "HTTP-Referer": "https://deltagpt.onrender.com",
+                                "X-Title": "DELTAGPT",
+                            },
+                            json={
+                                "model": model,
+                                "messages": openai_messages,
+                                "max_tokens": settings["max_tokens"],
+                                "temperature": settings["temperature"]
+                            },
+                            timeout=30.0
+                        )
                         
-                        return {
-                            "success": True,
-                            "response": assistant_message,
-                            "model": model,
-                            "tokens_used": tokens_used,
-                            "context_length": len(messages),
-                            "thinking_mode": thinking_mode
-                        }
-                    else:
-                        error_text = response.text[:200] if response.text else "No error message"
-                        print(f"❌ Ошибка {response.status_code} от {model}: {error_text}")
+                        print(f"📥 Ответ от {model}: {response.status_code}")
+                        
+                        if response.status_code == 200:
+                            data = response.json()
+                            assistant_message = data["choices"][0]["message"]["content"]
+                            tokens_used = data.get("usage", {}).get("total_tokens", self.estimate_tokens(assistant_message))
+                            
+                            if username:
+                                self.user_manager.update_user_stats(username, tokens_used)
+                            
+                            if chat_id:
+                                self.add_message(chat_id, "assistant", assistant_message, username, tokens_used)
+                            
+                            return {
+                                "success": True,
+                                "response": assistant_message,
+                                "model": model,
+                                "tokens_used": tokens_used,
+                                "context_length": len(messages),
+                                "thinking_mode": thinking_mode
+                            }
+                        else:
+                            error_text = response.text[:200] if response.text else "No error message"
+                            print(f"❌ Ошибка {response.status_code} от {model}: {error_text}")
+                            continue
+                            
+                    except Exception as e:
+                        print(f"❌ Исключение для {model}: {str(e)}")
                         continue
-                        
-                except Exception as e:
-                    print(f"❌ Исключение для {model}: {str(e)}")
-                    continue
             
             return {
                 "success": False,
@@ -415,50 +411,51 @@ async def debug_keys():
     if not OPENROUTER_KEYS:
         return {"error": "❌ Нет API ключей. Добавь OPENROUTER_KEY_1 и OPENROUTER_KEY_2 в Environment Variables"}
     
-    for i, key in enumerate(OPENROUTER_KEYS):
-        try:
-            response = requests.post(
-                url="https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {key}",
-                    "Content-Type": "application/json",
-                    "HTTP-Referer": "https://deltagpt.onrender.com",
-                    "X-Title": "DELTAGPT",
-                },
-                json={
-                    "model": "google/gemini-2.0-flash-exp:free",
-                    "messages": [{"role": "user", "content": "Ответь 'Тест успешен'"}],
-                    "max_tokens": 10
-                },
-                timeout=10
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
+    async with httpx.AsyncClient() as client:
+        for i, key in enumerate(OPENROUTER_KEYS):
+            try:
+                response = await client.post(
+                    url="https://openrouter.ai/api/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {key}",
+                        "Content-Type": "application/json",
+                        "HTTP-Referer": "https://deltagpt.onrender.com",
+                        "X-Title": "DELTAGPT",
+                    },
+                    json={
+                        "model": "google/gemini-2.0-flash-exp:free",
+                        "messages": [{"role": "user", "content": "Ответь 'Тест успешен'"}],
+                        "max_tokens": 10
+                    },
+                    timeout=10.0
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    results.append({
+                        "key_index": i,
+                        "key_prefix": key[:20] + "...",
+                        "status": "✅ Работает",
+                        "usage": deltagpt.key_usage.get(key, 0),
+                        "response": data["choices"][0]["message"]["content"]
+                    })
+                else:
+                    results.append({
+                        "key_index": i,
+                        "key_prefix": key[:20] + "...",
+                        "status": f"❌ Ошибка {response.status_code}",
+                        "usage": deltagpt.key_usage.get(key, 0),
+                        "response": None
+                    })
+                    
+            except Exception as e:
                 results.append({
                     "key_index": i,
-                    "key_prefix": key[:20] + "...",
-                    "status": "✅ Работает",
-                    "usage": deltagpt.key_usage.get(key, 0),
-                    "response": data["choices"][0]["message"]["content"]
-                })
-            else:
-                results.append({
-                    "key_index": i,
-                    "key_prefix": key[:20] + "...",
-                    "status": f"❌ Ошибка {response.status_code}",
+                    "key_prefix": key[:20] + "...", 
+                    "status": f"❌ Исключение: {str(e)}",
                     "usage": deltagpt.key_usage.get(key, 0),
                     "response": None
                 })
-                
-        except Exception as e:
-            results.append({
-                "key_index": i,
-                "key_prefix": key[:20] + "...", 
-                "status": f"❌ Исключение: {str(e)}",
-                "usage": deltagpt.key_usage.get(key, 0),
-                "response": None
-            })
     
     return {"results": results}
 
@@ -521,7 +518,7 @@ async def chat_api(request: Request):
         
         history = deltagpt.get_chat_history(chat_id)
         
-        result = deltagpt.chat_completion(history, chat_id, username, thinking_mode)
+        result = await deltagpt.chat_completion(history, chat_id, username, thinking_mode)
         result["chat_id"] = chat_id
         
         return JSONResponse(result)
@@ -596,11 +593,11 @@ async def delete_chat(chat_id: str):
         return JSONResponse({"success": False, "message": str(e)})
 
 if __name__ == "__main__":
-    print("🚀 DELTAGPT SECURE запускается...")
+    print("🚀 DELTAGPT ASYNC запускается...")
     print(f"🔑 Загружено {len(OPENROUTER_KEYS)} API ключей из Environment Variables")
-    print("🎯 Модели: GPT-4, GPT-4 Turbo, Gemini 2.0, Claude 3.5")
+    print("🎯 Модели: Gemini 2.0, Llama 3.1, WizardLM, Nemotron")
     print("🧠 Режимы: Быстрый / Глубокое / Креативный")
-    print("⚡ Используем: requests + балансировка нагрузки")
+    print("⚡ Используем: httpx (async) + балансировка нагрузки")
     print("🔒 Ключи защищены: Environment Variables")
     print("🌐 Открой: http://localhost:8000")
     print("🔧 Debug ключей: http://localhost:8000/debug/keys")
