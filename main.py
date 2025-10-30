@@ -11,7 +11,8 @@ import secrets
 from datetime import datetime
 from typing import List, Dict, Optional
 import uvicorn
-import httpx  # ← Меняем requests на httpx для async
+import httpx
+import random
 
 app = FastAPI(title="DELTAGPT - Advanced AI Assistant")
 
@@ -30,6 +31,10 @@ OPENROUTER_KEYS = [
 
 # Фильтруем пустые значения
 OPENROUTER_KEYS = [key for key in OPENROUTER_KEYS if key]
+
+print(f"🔑 Загружено ключей: {len(OPENROUTER_KEYS)}")
+for i, key in enumerate(OPENROUTER_KEYS):
+    print(f"   Key {i+1}: {key[:20]}...")
 
 # Файлы хранения
 CHATS_FILE = "chats.json"
@@ -150,15 +155,10 @@ class DeltaGPT:
         self.load_chats()
     
     def get_api_key(self):
-        """Выбирает ключ с наименьшим использованием"""
+        """Выбирает случайный ключ"""
         if not OPENROUTER_KEYS:
-            raise Exception("❌ Нет доступных API ключей. Добавь OPENROUTER_KEY_1 и OPENROUTER_KEY_2 в Environment Variables")
-        
-        min_key = min(self.key_usage, key=self.key_usage.get)
-        self.key_usage[min_key] += 1
-        
-        print(f"🔑 Используем ключ: {min_key[:20]}... (использований: {self.key_usage[min_key]})")
-        return min_key
+            return None
+        return random.choice(OPENROUTER_KEYS)
     
     def load_chats(self):
         try:
@@ -199,7 +199,6 @@ class DeltaGPT:
             
             with open(CHATS_FILE, 'w', encoding='utf-8') as f:
                 json.dump(chats_data, f, ensure_ascii=False, indent=2)
-            print(f"💾 Сохранено {len(chats_data)} чатов")
         except Exception as e:
             print(f"❌ Ошибка сохранения чатов: {e}")
     
@@ -268,109 +267,151 @@ class DeltaGPT:
     def estimate_tokens(self, text: str) -> int:
         return len(text) // 4
     
-    async def chat_completion(self, messages: List[Dict], chat_id: str = None, username: str = None, thinking_mode: str = "fast") -> Dict:
+    def generate_fallback_response(self, user_message: str) -> str:
+        """Генерация ответа когда API недоступно"""
+        message_lower = user_message.lower()
+        
+        responses = [
+            "Привет! Я DELTAGPT. В данный момент AI модели временно недоступны, но я могу помочь с базовыми вопросами.",
+            "К сожалению, нейросети временно не отвечают. Вы можете попробовать позже или задать вопрос в другой форме.",
+            "Сервис AI временно недоступен. Пока могу предложить: создание простого кода, объяснение концепций, помощь с идеями.",
+            "Вот пример кода на Python:\n\n```python\n# Простой калькулятор\nprint('Привет! Я простой ассистент.')\n```",
+            "Попробуйте переформулировать вопрос или обратиться позже, когда AI модели будут доступны."
+        ]
+        
+        # Контекстные ответы
+        if any(word in message_lower for word in ["привет", "hello", "hi", "здравствуй"]):
+            return "Привет! 👋 К сожалению, AI системы временно недоступны. Чем еще могу помочь?"
+        elif any(word in message_lower for word in ["код", "программир", "python", "javascript"]):
+            return "Вот пример простого кода:\n\n```python\n# Приветствие на Python\ndef greet(name):\n    return f'Привет, {name}!'\n\nprint(greet('пользователь'))\n```"
+        elif any(word in message_lower for word in ["помощь", "help", "команды"]):
+            return "Доступные возможности:\n• Общие вопросы\n• Примеры кода\n• Объяснение концепций\n• Идеи для проектов\n\nДля полного AI функционала нужны рабочие API ключи."
+        else:
+            return random.choice(responses)
+    
+    async def try_openrouter_api(self, messages: List[Dict], model: str, max_tokens: int, temperature: float) -> Dict:
+        """Попытка запроса к OpenRouter API"""
         try:
-            if not OPENROUTER_KEYS:
-                return {
-                    "success": False,
-                    "response": "❌ API ключи не настроены. Добавь OPENROUTER_KEY_1 и OPENROUTER_KEY_2 в Environment Variables на Render.",
-                    "model": "unknown",
-                    "tokens_used": 0,
-                    "context_length": len(messages)
-                }
+            api_key = self.get_api_key()
+            if not api_key:
+                return {"success": False, "error": "No API keys available"}
             
-            mode_settings = {
-                "fast": {"max_tokens": 4000, "temperature": 0.7},
-                "deep": {"max_tokens": 8000, "temperature": 0.3},
-                "creative": {"max_tokens": 6000, "temperature": 0.9}
-            }
+            print(f"🔄 Пробуем {model} с ключом: {api_key[:20]}...")
             
-            settings = mode_settings.get(thinking_mode, mode_settings["fast"])
-            
-            system_prompt = """Ты DELTAGPT - мощный AI ассистент. Отвечай подробно и помогай пользователям.
-Всегда отвечай на русском языке. Будь полезным и дружелюбным.
-Форматируй ответы чисто, используй код-блоки для программирования."""
-            
-            openai_messages = [{"role": "system", "content": system_prompt}]
-            
-            for msg in messages[-10:]:  # Уменьшим контекст для стабильности
+            openai_messages = []
+            for msg in messages[-6:]:  # Маленький контекст для теста
                 openai_messages.append({
                     "role": msg["role"],
                     "content": msg["content"]
                 })
             
-            # Стабильные бесплатные модели
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    url="https://openrouter.ai/api/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                        "HTTP-Referer": "https://deltagpt.onrender.com",
+                        "X-Title": "DELTAGPT",
+                    },
+                    json={
+                        "model": model,
+                        "messages": openai_messages,
+                        "max_tokens": max_tokens,
+                        "temperature": temperature
+                    },
+                    timeout=20.0
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    return {
+                        "success": True,
+                        "response": data["choices"][0]["message"]["content"],
+                        "tokens_used": data.get("usage", {}).get("total_tokens", 0)
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "error": f"HTTP {response.status_code}: {response.text[:100]}"
+                    }
+                    
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    async def chat_completion(self, messages: List[Dict], chat_id: str = None, username: str = None, thinking_mode: str = "fast") -> Dict:
+        try:
+            # Если нет ключей - сразу fallback
+            if not OPENROUTER_KEYS:
+                user_message = next((msg["content"] for msg in reversed(messages) if msg["role"] == "user"), "")
+                fallback_response = self.generate_fallback_response(user_message)
+                
+                if chat_id:
+                    self.add_message(chat_id, "assistant", fallback_response, username, 0)
+                
+                return {
+                    "success": True,
+                    "response": fallback_response,
+                    "model": "fallback",
+                    "tokens_used": 0,
+                    "context_length": len(messages),
+                    "thinking_mode": thinking_mode
+                }
+            
+            mode_settings = {
+                "fast": {"max_tokens": 1000, "temperature": 0.7},
+                "deep": {"max_tokens": 2000, "temperature": 0.3},
+                "creative": {"max_tokens": 1500, "temperature": 0.9}
+            }
+            
+            settings = mode_settings.get(thinking_mode, mode_settings["fast"])
+            
+            # Простые стабильные модели
             models_to_try = [
                 "google/gemini-2.0-flash-exp:free",
-                "meta-llama/llama-3.1-8b-instruct:free", 
-                "microsoft/wizardlm-2-8x22b:free",
-                "nvidia/nemotron-nano-12b-v2-vl:free"
+                "meta-llama/llama-3.1-8b-instruct:free",
+                "microsoft/wizardlm-2-8x22b:free"
             ]
             
-            async with httpx.AsyncClient() as client:
-                for model in models_to_try:
-                    try:
-                        print(f"🔄 Пробуем модель: {model} (режим: {thinking_mode})")
-                        
-                        api_key = self.get_api_key()
-                        
-                        response = await client.post(
-                            url="https://openrouter.ai/api/v1/chat/completions",
-                            headers={
-                                "Authorization": f"Bearer {api_key}",
-                                "Content-Type": "application/json",
-                                "HTTP-Referer": "https://deltagpt.onrender.com",
-                                "X-Title": "DELTAGPT",
-                            },
-                            json={
-                                "model": model,
-                                "messages": openai_messages,
-                                "max_tokens": settings["max_tokens"],
-                                "temperature": settings["temperature"]
-                            },
-                            timeout=30.0
-                        )
-                        
-                        print(f"📥 Ответ от {model}: {response.status_code}")
-                        
-                        if response.status_code == 200:
-                            data = response.json()
-                            assistant_message = data["choices"][0]["message"]["content"]
-                            tokens_used = data.get("usage", {}).get("total_tokens", self.estimate_tokens(assistant_message))
-                            
-                            if username:
-                                self.user_manager.update_user_stats(username, tokens_used)
-                            
-                            if chat_id:
-                                self.add_message(chat_id, "assistant", assistant_message, username, tokens_used)
-                            
-                            return {
-                                "success": True,
-                                "response": assistant_message,
-                                "model": model,
-                                "tokens_used": tokens_used,
-                                "context_length": len(messages),
-                                "thinking_mode": thinking_mode
-                            }
-                        else:
-                            error_text = response.text[:200] if response.text else "No error message"
-                            print(f"❌ Ошибка {response.status_code} от {model}: {error_text}")
-                            continue
-                            
-                    except Exception as e:
-                        print(f"❌ Исключение для {model}: {str(e)}")
-                        continue
+            for model in models_to_try:
+                result = await self.try_openrouter_api(messages, model, settings["max_tokens"], settings["temperature"])
+                
+                if result["success"]:
+                    if username:
+                        self.user_manager.update_user_stats(username, result["tokens_used"])
+                    
+                    if chat_id:
+                        self.add_message(chat_id, "assistant", result["response"], username, result["tokens_used"])
+                    
+                    return {
+                        "success": True,
+                        "response": result["response"],
+                        "model": model,
+                        "tokens_used": result["tokens_used"],
+                        "context_length": len(messages),
+                        "thinking_mode": thinking_mode
+                    }
+                else:
+                    print(f"❌ {model}: {result['error']}")
+            
+            # Если все модели не сработали - fallback
+            user_message = next((msg["content"] for msg in reversed(messages) if msg["role"] == "user"), "")
+            fallback_response = self.generate_fallback_response(user_message)
+            
+            if chat_id:
+                self.add_message(chat_id, "assistant", fallback_response, username, 0)
             
             return {
-                "success": False,
-                "response": "❌ Все модели недоступны. Попробуйте позже.",
-                "model": "unknown",
+                "success": True,
+                "response": fallback_response + "\n\n⚠️ AI модели временно недоступны. Используется упрощенный режим.",
+                "model": "fallback",
                 "tokens_used": 0,
-                "context_length": len(messages)
+                "context_length": len(messages),
+                "thinking_mode": thinking_mode
             }
                 
         except Exception as e:
-            print(f"❌ Критическая ошибка в chat_completion: {str(e)}")
+            print(f"❌ Критическая ошибка: {str(e)}")
             return {
                 "success": False,
                 "response": f"❌ Ошибка сервера: {str(e)}",
@@ -409,57 +450,62 @@ async def debug_keys():
     results = []
     
     if not OPENROUTER_KEYS:
-        return {"error": "❌ Нет API ключей. Добавь OPENROUTER_KEY_1 и OPENROUTER_KEY_2 в Environment Variables"}
+        return {"error": "❌ Нет API ключей в Environment Variables"}
     
-    async with httpx.AsyncClient() as client:
-        for i, key in enumerate(OPENROUTER_KEYS):
-            try:
+    for i, key in enumerate(OPENROUTER_KEYS):
+        try:
+            async with httpx.AsyncClient() as client:
                 response = await client.post(
                     url="https://openrouter.ai/api/v1/chat/completions",
                     headers={
                         "Authorization": f"Bearer {key}",
                         "Content-Type": "application/json",
-                        "HTTP-Referer": "https://deltagpt.onrender.com",
-                        "X-Title": "DELTAGPT",
                     },
                     json={
                         "model": "google/gemini-2.0-flash-exp:free",
-                        "messages": [{"role": "user", "content": "Ответь 'Тест успешен'"}],
-                        "max_tokens": 10
+                        "messages": [{"role": "user", "content": "Say 'TEST' only"}],
+                        "max_tokens": 5
                     },
                     timeout=10.0
                 )
                 
-                if response.status_code == 200:
-                    data = response.json()
-                    results.append({
-                        "key_index": i,
-                        "key_prefix": key[:20] + "...",
-                        "status": "✅ Работает",
-                        "usage": deltagpt.key_usage.get(key, 0),
-                        "response": data["choices"][0]["message"]["content"]
-                    })
-                else:
-                    results.append({
-                        "key_index": i,
-                        "key_prefix": key[:20] + "...",
-                        "status": f"❌ Ошибка {response.status_code}",
-                        "usage": deltagpt.key_usage.get(key, 0),
-                        "response": None
-                    })
-                    
-            except Exception as e:
                 results.append({
-                    "key_index": i,
-                    "key_prefix": key[:20] + "...", 
-                    "status": f"❌ Исключение: {str(e)}",
-                    "usage": deltagpt.key_usage.get(key, 0),
-                    "response": None
+                    "key": f"Key_{i+1}",
+                    "prefix": key[:20] + "...",
+                    "status_code": response.status_code,
+                    "status": "✅ Работает" if response.status_code == 200 else f"❌ Ошибка {response.status_code}",
+                    "response": response.text[:100] if response.status_code != 200 else "Успех"
                 })
+                
+        except Exception as e:
+            results.append({
+                "key": f"Key_{i+1}",
+                "prefix": key[:20] + "...",
+                "status_code": "Exception",
+                "status": f"❌ {str(e)}",
+                "response": None
+            })
     
-    return {"results": results}
+    return {
+        "keys_loaded": len(OPENROUTER_KEYS),
+        "results": results,
+        "env_vars_checked": ["OPENROUTER_KEY_1", "OPENROUTER_KEY_2"]
+    }
 
-# Аутентификация
+# Простой тест API
+@app.get("/debug/test")
+async def debug_test():
+    """Простой тест API"""
+    test_messages = [{"role": "user", "content": "Ответь одним словом: ТЕСТ"}]
+    
+    result = await deltagpt.chat_completion(test_messages)
+    return {
+        "api_test": result,
+        "openrouter_keys_loaded": len(OPENROUTER_KEYS),
+        "timestamp": datetime.now().isoformat()
+    }
+
+# Аутентификация и остальные API маршруты...
 @app.post("/register")
 async def register(request: Request):
     try:
@@ -498,7 +544,6 @@ async def login(request: Request):
     except Exception as e:
         return JSONResponse({"success": False, "message": f"Ошибка: {str(e)}"})
 
-# API чата
 @app.post("/api/chat")
 async def chat_api(request: Request):
     try:
@@ -529,7 +574,7 @@ async def chat_api(request: Request):
             "response": f"❌ Server error: {str(e)}"
         })
 
-# API чатов пользователя
+# Остальные API маршруты...
 @app.get("/api/chats/user/{username}")
 async def get_user_chats(username: str):
     try:
@@ -542,7 +587,6 @@ async def get_user_chats(username: str):
     except Exception as e:
         return JSONResponse({"success": False, "message": str(e)})
 
-# API получения конкретного чата
 @app.get("/api/chat/{chat_id}")
 async def get_chat(chat_id: str):
     try:
@@ -569,7 +613,6 @@ async def get_chat(chat_id: str):
     except Exception as e:
         return JSONResponse({"success": False, "message": str(e)})
 
-# API очистки чата
 @app.post("/api/chat/{chat_id}/clear")
 async def clear_chat(chat_id: str):
     try:
@@ -581,7 +624,6 @@ async def clear_chat(chat_id: str):
     except Exception as e:
         return JSONResponse({"success": False, "message": str(e)})
 
-# API удаления чата
 @app.delete("/api/chat/{chat_id}")
 async def delete_chat(chat_id: str):
     try:
@@ -593,19 +635,20 @@ async def delete_chat(chat_id: str):
         return JSONResponse({"success": False, "message": str(e)})
 
 if __name__ == "__main__":
-    print("🚀 DELTAGPT ASYNC запускается...")
-    print(f"🔑 Загружено {len(OPENROUTER_KEYS)} API ключей из Environment Variables")
-    print("🎯 Модели: Gemini 2.0, Llama 3.1, WizardLM, Nemotron")
-    print("🧠 Режимы: Быстрый / Глубокое / Креативный")
-    print("⚡ Используем: httpx (async) + балансировка нагрузки")
-    print("🔒 Ключи защищены: Environment Variables")
+    print("🚀 DELTAGPT FALLBACK запускается...")
+    print(f"🔑 Ключей в Environment Variables: {len(OPENROUTER_KEYS)}")
+    print("🎯 Режимы: Быстрый / Глубокое / Креативный")
+    print("🔄 Fallback система: АКТИВНА")
     print("🌐 Открой: http://localhost:8000")
-    print("🔧 Debug ключей: http://localhost:8000/debug/keys")
+    print("🔧 Debug: http://localhost:8000/debug/keys")
+    print("🧪 Тест: http://localhost:8000/debug/test")
     
     if not OPENROUTER_KEYS:
-        print("❌ ВНИМАНИЕ: Нет API ключей!")
-        print("📝 Добавь в Environment Variables на Render:")
+        print("❌ ВНИМАНИЕ: Нет API ключей в Environment Variables!")
+        print("📝 Добавь на Render в Settings → Environment Variables:")
         print("   OPENROUTER_KEY_1 = твой-ключ-1")
         print("   OPENROUTER_KEY_2 = твой-ключ-2")
+    else:
+        print("✅ Ключи загружены из Environment Variables")
     
     uvicorn.run(app, host="0.0.0.0", port=8000)
