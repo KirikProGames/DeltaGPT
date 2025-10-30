@@ -23,18 +23,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Безопасное получение ключей из Environment Variables
+# API ключи - DeepSeek + OpenRouter
+DEEPSEEK_API_KEY = "sk-29b953857b824c7f949e0f2b4a2c2f86"
 OPENROUTER_KEYS = [
-    os.getenv("OPENROUTER_KEY_1"),  # Твой GPT-5 ключ
-    os.getenv("OPENROUTER_KEY_2")   # Резервный ключ
+    os.getenv("OPENROUTER_KEY_1"),
+    os.getenv("OPENROUTER_KEY_2")
 ]
-
-# Фильтруем пустые значения
 OPENROUTER_KEYS = [key for key in OPENROUTER_KEYS if key]
 
-print(f"🔑 Загружено ключей: {len(OPENROUTER_KEYS)}")
-for i, key in enumerate(OPENROUTER_KEYS):
-    print(f"   Key {i+1}: {key[:20]}...")
+print("🔑 Загружено API ключей:")
+print(f"   DeepSeek: {DEEPSEEK_API_KEY[:20]}...")
+print(f"   OpenRouter: {len(OPENROUTER_KEYS)} ключей")
 
 # Файлы хранения
 CHATS_FILE = "chats.json"
@@ -151,14 +150,7 @@ class DeltaGPT:
     def __init__(self):
         self.sessions: Dict[str, ChatSession] = {}
         self.user_manager = UserManager()
-        self.key_usage = {key: 0 for key in OPENROUTER_KEYS} if OPENROUTER_KEYS else {}
         self.load_chats()
-    
-    def get_api_key(self):
-        """Выбирает случайный ключ"""
-        if not OPENROUTER_KEYS:
-            return None
-        return random.choice(OPENROUTER_KEYS)
     
     def load_chats(self):
         try:
@@ -267,39 +259,66 @@ class DeltaGPT:
     def estimate_tokens(self, text: str) -> int:
         return len(text) // 4
     
-    def generate_fallback_response(self, user_message: str) -> str:
-        """Генерация ответа когда API недоступно"""
-        message_lower = user_message.lower()
-        
-        responses = [
-            "Привет! Я DELTAGPT. В данный момент AI модели временно недоступны, но я могу помочь с базовыми вопросами.",
-            "К сожалению, нейросети временно не отвечают. Вы можете попробовать позже или задать вопрос в другой форме.",
-            "Сервис AI временно недоступен. Пока могу предложить: создание простого кода, объяснение концепций, помощь с идеями.",
-            "Вот пример кода на Python:\n\n```python\n# Простой калькулятор\nprint('Привет! Я простой ассистент.')\n```",
-            "Попробуйте переформулировать вопрос или обратиться позже, когда AI модели будут доступны."
-        ]
-        
-        # Контекстные ответы
-        if any(word in message_lower for word in ["привет", "hello", "hi", "здравствуй"]):
-            return "Привет! 👋 К сожалению, AI системы временно недоступны. Чем еще могу помочь?"
-        elif any(word in message_lower for word in ["код", "программир", "python", "javascript"]):
-            return "Вот пример простого кода:\n\n```python\n# Приветствие на Python\ndef greet(name):\n    return f'Привет, {name}!'\n\nprint(greet('пользователь'))\n```"
-        elif any(word in message_lower for word in ["помощь", "help", "команды"]):
-            return "Доступные возможности:\n• Общие вопросы\n• Примеры кода\n• Объяснение концепций\n• Идеи для проектов\n\nДля полного AI функционала нужны рабочие API ключи."
-        else:
-            return random.choice(responses)
+    async def try_deepseek_api(self, messages: List[Dict], max_tokens: int, temperature: float) -> Dict:
+        """Запрос к DeepSeek API"""
+        try:
+            print("🔄 Пробуем DeepSeek API...")
+            
+            # Форматируем сообщения для DeepSeek
+            deepseek_messages = []
+            for msg in messages[-10:]:
+                deepseek_messages.append({
+                    "role": msg["role"],
+                    "content": msg["content"]
+                })
+            
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    url="https://api.deepseek.com/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": "deepseek-chat",
+                        "messages": deepseek_messages,
+                        "max_tokens": max_tokens,
+                        "temperature": temperature,
+                        "stream": False
+                    },
+                    timeout=30.0
+                )
+                
+                print(f"📥 DeepSeek ответ: {response.status_code}")
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    return {
+                        "success": True,
+                        "response": data["choices"][0]["message"]["content"],
+                        "tokens_used": data.get("usage", {}).get("total_tokens", self.estimate_tokens(data["choices"][0]["message"]["content"])),
+                        "model": "deepseek-chat"
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "error": f"DeepSeek HTTP {response.status_code}: {response.text[:200]}"
+                    }
+                    
+        except Exception as e:
+            return {"success": False, "error": f"DeepSeek Exception: {str(e)}"}
     
     async def try_openrouter_api(self, messages: List[Dict], model: str, max_tokens: int, temperature: float) -> Dict:
-        """Попытка запроса к OpenRouter API"""
+        """Запрос к OpenRouter API"""
         try:
-            api_key = self.get_api_key()
-            if not api_key:
-                return {"success": False, "error": "No API keys available"}
+            if not OPENROUTER_KEYS:
+                return {"success": False, "error": "No OpenRouter keys"}
             
-            print(f"🔄 Пробуем {model} с ключом: {api_key[:20]}...")
+            api_key = random.choice(OPENROUTER_KEYS)
+            print(f"🔄 Пробуем {model}...")
             
             openai_messages = []
-            for msg in messages[-6:]:  # Маленький контекст для теста
+            for msg in messages[-8:]:
                 openai_messages.append({
                     "role": msg["role"],
                     "content": msg["content"]
@@ -328,73 +347,84 @@ class DeltaGPT:
                     return {
                         "success": True,
                         "response": data["choices"][0]["message"]["content"],
-                        "tokens_used": data.get("usage", {}).get("total_tokens", 0)
+                        "tokens_used": data.get("usage", {}).get("total_tokens", 0),
+                        "model": model
                     }
                 else:
                     return {
                         "success": False,
-                        "error": f"HTTP {response.status_code}: {response.text[:100]}"
+                        "error": f"OpenRouter {response.status_code}: {response.text[:100]}"
                     }
                     
         except Exception as e:
             return {"success": False, "error": str(e)}
     
+    def generate_fallback_response(self, user_message: str) -> str:
+        """Fallback когда все API недоступны"""
+        message_lower = user_message.lower().strip()
+        
+        if len(message_lower) <= 2:
+            return "Привет! 👋 Напиши свой вопрос - я готов помочь!"
+        
+        if any(word in message_lower for word in ["привет", "hello", "hi"]):
+            return "Привет! 🚀 Я DELTAGPT - твой AI ассистент. Задай любой вопрос!"
+        
+        return "Интересный вопрос! 💡 К сожалению, в данный момент AI системы временно недоступны. Попробуй обновить страницу или напиши позже."
+    
     async def chat_completion(self, messages: List[Dict], chat_id: str = None, username: str = None, thinking_mode: str = "fast") -> Dict:
         try:
-            # Если нет ключей - сразу fallback
-            if not OPENROUTER_KEYS:
-                user_message = next((msg["content"] for msg in reversed(messages) if msg["role"] == "user"), "")
-                fallback_response = self.generate_fallback_response(user_message)
-                
-                if chat_id:
-                    self.add_message(chat_id, "assistant", fallback_response, username, 0)
-                
-                return {
-                    "success": True,
-                    "response": fallback_response,
-                    "model": "fallback",
-                    "tokens_used": 0,
-                    "context_length": len(messages),
-                    "thinking_mode": thinking_mode
-                }
-            
             mode_settings = {
-                "fast": {"max_tokens": 1000, "temperature": 0.7},
-                "deep": {"max_tokens": 2000, "temperature": 0.3},
-                "creative": {"max_tokens": 1500, "temperature": 0.9}
+                "fast": {"max_tokens": 2000, "temperature": 0.7},
+                "deep": {"max_tokens": 4000, "temperature": 0.3},
+                "creative": {"max_tokens": 3000, "temperature": 0.9}
             }
             
             settings = mode_settings.get(thinking_mode, mode_settings["fast"])
             
-            # Простые стабильные модели
-            models_to_try = [
+            # 1. Пробуем DeepSeek в первую очередь
+            deepseek_result = await self.try_deepseek_api(messages, settings["max_tokens"], settings["temperature"])
+            if deepseek_result["success"]:
+                if username:
+                    self.user_manager.update_user_stats(username, deepseek_result["tokens_used"])
+                
+                if chat_id:
+                    self.add_message(chat_id, "assistant", deepseek_result["response"], username, deepseek_result["tokens_used"])
+                
+                return {
+                    "success": True,
+                    "response": deepseek_result["response"],
+                    "model": deepseek_result["model"],
+                    "tokens_used": deepseek_result["tokens_used"],
+                    "context_length": len(messages),
+                    "thinking_mode": thinking_mode
+                }
+            
+            # 2. Если DeepSeek не сработал, пробуем OpenRouter
+            openrouter_models = [
                 "google/gemini-2.0-flash-exp:free",
                 "meta-llama/llama-3.1-8b-instruct:free",
                 "microsoft/wizardlm-2-8x22b:free"
             ]
             
-            for model in models_to_try:
-                result = await self.try_openrouter_api(messages, model, settings["max_tokens"], settings["temperature"])
-                
-                if result["success"]:
+            for model in openrouter_models:
+                openrouter_result = await self.try_openrouter_api(messages, model, settings["max_tokens"], settings["temperature"])
+                if openrouter_result["success"]:
                     if username:
-                        self.user_manager.update_user_stats(username, result["tokens_used"])
+                        self.user_manager.update_user_stats(username, openrouter_result["tokens_used"])
                     
                     if chat_id:
-                        self.add_message(chat_id, "assistant", result["response"], username, result["tokens_used"])
+                        self.add_message(chat_id, "assistant", openrouter_result["response"], username, openrouter_result["tokens_used"])
                     
                     return {
                         "success": True,
-                        "response": result["response"],
-                        "model": model,
-                        "tokens_used": result["tokens_used"],
+                        "response": openrouter_result["response"],
+                        "model": openrouter_result["model"],
+                        "tokens_used": openrouter_result["tokens_used"],
                         "context_length": len(messages),
                         "thinking_mode": thinking_mode
                     }
-                else:
-                    print(f"❌ {model}: {result['error']}")
             
-            # Если все модели не сработали - fallback
+            # 3. Если все API не сработали - fallback
             user_message = next((msg["content"] for msg in reversed(messages) if msg["role"] == "user"), "")
             fallback_response = self.generate_fallback_response(user_message)
             
@@ -403,7 +433,7 @@ class DeltaGPT:
             
             return {
                 "success": True,
-                "response": fallback_response + "\n\n⚠️ AI модели временно недоступны. Используется упрощенный режим.",
+                "response": fallback_response,
                 "model": "fallback",
                 "tokens_used": 0,
                 "context_length": len(messages),
@@ -443,69 +473,47 @@ async def serve_css():
 async def serve_js():
     return FileResponse("script.js")
 
-# Debug endpoint для проверки ключей
-@app.get("/debug/keys")
-async def debug_keys():
-    """Проверка работоспособности всех ключей"""
-    results = []
+# Debug endpoint для проверки API
+@app.get("/debug/api")
+async def debug_api():
+    """Проверка всех API"""
+    results = {}
     
-    if not OPENROUTER_KEYS:
-        return {"error": "❌ Нет API ключей в Environment Variables"}
+    # Тест DeepSeek
+    deepseek_test = await deltagpt.try_deepseek_api(
+        [{"role": "user", "content": "Ответь одним словом: ПРИВЕТ"}],
+        10, 0.1
+    )
+    results["deepseek"] = deepseek_test
     
-    for i, key in enumerate(OPENROUTER_KEYS):
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    url="https://openrouter.ai/api/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": "google/gemini-2.0-flash-exp:free",
-                        "messages": [{"role": "user", "content": "Say 'TEST' only"}],
-                        "max_tokens": 5
-                    },
-                    timeout=10.0
-                )
-                
-                results.append({
-                    "key": f"Key_{i+1}",
-                    "prefix": key[:20] + "...",
-                    "status_code": response.status_code,
-                    "status": "✅ Работает" if response.status_code == 200 else f"❌ Ошибка {response.status_code}",
-                    "response": response.text[:100] if response.status_code != 200 else "Успех"
-                })
-                
-        except Exception as e:
-            results.append({
-                "key": f"Key_{i+1}",
-                "prefix": key[:20] + "...",
-                "status_code": "Exception",
-                "status": f"❌ {str(e)}",
-                "response": None
-            })
+    # Тест OpenRouter
+    if OPENROUTER_KEYS:
+        openrouter_test = await deltagpt.try_openrouter_api(
+            [{"role": "user", "content": "Ответь одним словом: ПРИВЕТ"}],
+            "google/gemini-2.0-flash-exp:free",
+            10, 0.1
+        )
+        results["openrouter"] = openrouter_test
     
     return {
-        "keys_loaded": len(OPENROUTER_KEYS),
-        "results": results,
-        "env_vars_checked": ["OPENROUTER_KEY_1", "OPENROUTER_KEY_2"]
+        "deepseek_key": DEEPSEEK_API_KEY[:20] + "...",
+        "openrouter_keys": len(OPENROUTER_KEYS),
+        "results": results
     }
 
-# Простой тест API
-@app.get("/debug/test")
-async def debug_test():
-    """Простой тест API"""
-    test_messages = [{"role": "user", "content": "Ответь одним словом: ТЕСТ"}]
+# Тест AI
+@app.get("/debug/test-ai")
+async def test_ai():
+    """Тест AI функционала"""
+    test_messages = [{"role": "user", "content": "Напиши короткое приветствие на русском"}]
     
     result = await deltagpt.chat_completion(test_messages)
     return {
-        "api_test": result,
-        "openrouter_keys_loaded": len(OPENROUTER_KEYS),
+        "ai_test": result,
         "timestamp": datetime.now().isoformat()
     }
 
-# Аутентификация и остальные API маршруты...
+# Остальные маршруты (аутентификация, API чата и т.д.) остаются без изменений
 @app.post("/register")
 async def register(request: Request):
     try:
@@ -635,20 +643,13 @@ async def delete_chat(chat_id: str):
         return JSONResponse({"success": False, "message": str(e)})
 
 if __name__ == "__main__":
-    print("🚀 DELTAGPT FALLBACK запускается...")
-    print(f"🔑 Ключей в Environment Variables: {len(OPENROUTER_KEYS)}")
-    print("🎯 Режимы: Быстрый / Глубокое / Креативный")
-    print("🔄 Fallback система: АКТИВНА")
+    print("🚀 DELTAGPT DEEPSEEK запускается...")
+    print(f"🔑 DeepSeek API ключ: {DEEPSEEK_API_KEY[:20]}...")
+    print(f"🔑 OpenRouter ключей: {len(OPENROUTER_KEYS)}")
+    print("🎯 Модели: DeepSeek Chat + Gemini + Llama")
+    print("🧠 Режимы: Быстрый / Глубокое / Креативный")
     print("🌐 Открой: http://localhost:8000")
-    print("🔧 Debug: http://localhost:8000/debug/keys")
-    print("🧪 Тест: http://localhost:8000/debug/test")
-    
-    if not OPENROUTER_KEYS:
-        print("❌ ВНИМАНИЕ: Нет API ключей в Environment Variables!")
-        print("📝 Добавь на Render в Settings → Environment Variables:")
-        print("   OPENROUTER_KEY_1 = твой-ключ-1")
-        print("   OPENROUTER_KEY_2 = твой-ключ-2")
-    else:
-        print("✅ Ключи загружены из Environment Variables")
+    print("🔧 Debug API: http://localhost:8000/debug/api")
+    print("🧪 Тест AI: http://localhost:8000/debug/test-ai")
     
     uvicorn.run(app, host="0.0.0.0", port=8000)
