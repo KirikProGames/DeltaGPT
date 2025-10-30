@@ -11,7 +11,7 @@ import secrets
 from datetime import datetime
 from typing import List, Dict, Optional
 import uvicorn
-import requests  # ← Используем requests вместо openai
+import requests
 
 app = FastAPI(title="DELTAGPT - Advanced AI Assistant")
 
@@ -22,11 +22,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Мульти-ключевая система
+# Безопасное получение ключей из Environment Variables
 OPENROUTER_KEYS = [
-    "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",  # Твой новый ключ
-    "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"   # Резервный ключ
+    os.getenv("OPENROUTER_KEY_1"),  # Твой GPT-5 ключ
+    os.getenv("OPENROUTER_KEY_2")   # Резервный ключ
 ]
+
+# Фильтруем пустые значения
+OPENROUTER_KEYS = [key for key in OPENROUTER_KEYS if key]
 
 # Файлы хранения
 CHATS_FILE = "chats.json"
@@ -143,13 +146,13 @@ class DeltaGPT:
     def __init__(self):
         self.sessions: Dict[str, ChatSession] = {}
         self.user_manager = UserManager()
-        self.key_usage = {key: 0 for key in OPENROUTER_KEYS}
+        self.key_usage = {key: 0 for key in OPENROUTER_KEYS} if OPENROUTER_KEYS else {}
         self.load_chats()
     
     def get_api_key(self):
         """Выбирает ключ с наименьшим использованием"""
         if not OPENROUTER_KEYS:
-            raise Exception("No API keys available")
+            raise Exception("❌ Нет доступных API ключей. Добавь OPENROUTER_KEY_1 и OPENROUTER_KEY_2 в Environment Variables")
         
         min_key = min(self.key_usage, key=self.key_usage.get)
         self.key_usage[min_key] += 1
@@ -267,10 +270,19 @@ class DeltaGPT:
     
     def chat_completion(self, messages: List[Dict], chat_id: str = None, username: str = None, thinking_mode: str = "fast") -> Dict:
         try:
+            if not OPENROUTER_KEYS:
+                return {
+                    "success": False,
+                    "response": "❌ API ключи не настроены. Добавь OPENROUTER_KEY_1 и OPENROUTER_KEY_2 в Environment Variables на Render.",
+                    "model": "unknown",
+                    "tokens_used": 0,
+                    "context_length": len(messages)
+                }
+            
             mode_settings = {
-                "fast": {"max_tokens": 4000, "temperature": 0.7},
-                "deep": {"max_tokens": 8000, "temperature": 0.3},
-                "creative": {"max_tokens": 6000, "temperature": 0.9}
+                "fast": {"max_tokens": 8000, "temperature": 0.7},
+                "deep": {"max_tokens": 16000, "temperature": 0.3},
+                "creative": {"max_tokens": 12000, "temperature": 0.9}
             }
             
             settings = mode_settings.get(thinking_mode, mode_settings["fast"])
@@ -287,21 +299,22 @@ class DeltaGPT:
                     "content": msg["content"]
                 })
             
-            # Стабильные модели
+            # Мощные модели для GPT-5 ключа
             models_to_try = [
+                "openai/gpt-4",
+                "openai/gpt-4-turbo", 
+                "openai/gpt-3.5-turbo",
                 "google/gemini-2.0-flash-exp:free",
-                "meta-llama/llama-3.1-8b-instruct:free",
-                "microsoft/wizardlm-2-8x22b:free",
-                "nvidia/nemotron-nano-12b-v2-vl:free"
+                "anthropic/claude-3.5-sonnet:free",
+                "meta-llama/llama-3.1-70b-instruct"
             ]
             
             for model in models_to_try:
                 try:
-                    print(f"🔄 Пробуем модель: {model}")
+                    print(f"🔄 Пробуем модель: {model} (режим: {thinking_mode})")
                     
                     api_key = self.get_api_key()
                     
-                    # Прямой HTTP запрос как в твоем примере
                     response = requests.post(
                         url="https://openrouter.ai/api/v1/chat/completions",
                         headers={
@@ -310,16 +323,19 @@ class DeltaGPT:
                             "HTTP-Referer": "https://deltagpt.onrender.com",
                             "X-Title": "DELTAGPT",
                         },
-                        data=json.dumps({
+                        json={
                             "model": model,
                             "messages": openai_messages,
                             "max_tokens": settings["max_tokens"],
-                            "temperature": settings["temperature"]
-                        }),
+                            "temperature": settings["temperature"],
+                            "top_p": 0.9,
+                            "frequency_penalty": 0.1,
+                            "presence_penalty": 0.1
+                        },
                         timeout=30
                     )
                     
-                    print(f"📥 Ответ: {response.status_code}")
+                    print(f"📥 Ответ от {model}: {response.status_code}")
                     
                     if response.status_code == 200:
                         data = response.json()
@@ -341,7 +357,8 @@ class DeltaGPT:
                             "thinking_mode": thinking_mode
                         }
                     else:
-                        print(f"❌ Ошибка {response.status_code}: {response.text[:100]}")
+                        error_text = response.text[:200] if response.text else "No error message"
+                        print(f"❌ Ошибка {response.status_code} от {model}: {error_text}")
                         continue
                         
                 except Exception as e:
@@ -372,7 +389,7 @@ deltagpt = DeltaGPT()
 # Статические файлы
 app.mount("/static", StaticFiles(directory="."), name="static")
 
-# Основные маршруты (остаются без изменений)
+# Основные маршруты
 @app.get("/")
 async def serve_html():
     try:
@@ -389,7 +406,63 @@ async def serve_css():
 async def serve_js():
     return FileResponse("script.js")
 
-# Аутентификация и API маршруты (остаются без изменений)
+# Debug endpoint для проверки ключей
+@app.get("/debug/keys")
+async def debug_keys():
+    """Проверка работоспособности всех ключей"""
+    results = []
+    
+    if not OPENROUTER_KEYS:
+        return {"error": "❌ Нет API ключей. Добавь OPENROUTER_KEY_1 и OPENROUTER_KEY_2 в Environment Variables"}
+    
+    for i, key in enumerate(OPENROUTER_KEYS):
+        try:
+            response = requests.post(
+                url="https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://deltagpt.onrender.com",
+                    "X-Title": "DELTAGPT",
+                },
+                json={
+                    "model": "google/gemini-2.0-flash-exp:free",
+                    "messages": [{"role": "user", "content": "Ответь 'Тест успешен'"}],
+                    "max_tokens": 10
+                },
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                results.append({
+                    "key_index": i,
+                    "key_prefix": key[:20] + "...",
+                    "status": "✅ Работает",
+                    "usage": deltagpt.key_usage.get(key, 0),
+                    "response": data["choices"][0]["message"]["content"]
+                })
+            else:
+                results.append({
+                    "key_index": i,
+                    "key_prefix": key[:20] + "...",
+                    "status": f"❌ Ошибка {response.status_code}",
+                    "usage": deltagpt.key_usage.get(key, 0),
+                    "response": None
+                })
+                
+        except Exception as e:
+            results.append({
+                "key_index": i,
+                "key_prefix": key[:20] + "...", 
+                "status": f"❌ Исключение: {str(e)}",
+                "usage": deltagpt.key_usage.get(key, 0),
+                "response": None
+            })
+    
+    return {"results": results}
+
+# Аутентификация
 @app.post("/register")
 async def register(request: Request):
     try:
@@ -428,6 +501,7 @@ async def login(request: Request):
     except Exception as e:
         return JSONResponse({"success": False, "message": f"Ошибка: {str(e)}"})
 
+# API чата
 @app.post("/api/chat")
 async def chat_api(request: Request):
     try:
@@ -458,17 +532,83 @@ async def chat_api(request: Request):
             "response": f"❌ Server error: {str(e)}"
         })
 
-# Остальные API маршруты остаются без изменений...
+# API чатов пользователя
+@app.get("/api/chats/user/{username}")
+async def get_user_chats(username: str):
+    try:
+        user = deltagpt.user_manager.get_user_by_username(username)
+        if not user:
+            return JSONResponse({"success": False, "message": "Пользователь не найден"})
+        
+        chats = deltagpt.get_user_chats(user["id"])
+        return JSONResponse({"success": True, "chats": chats})
+    except Exception as e:
+        return JSONResponse({"success": False, "message": str(e)})
+
+# API получения конкретного чата
+@app.get("/api/chat/{chat_id}")
+async def get_chat(chat_id: str):
+    try:
+        history = deltagpt.get_chat_history(chat_id)
+        chat_info = None
+        
+        if chat_id in deltagpt.sessions:
+            chat = deltagpt.sessions[chat_id]
+            chat_info = {
+                "id": chat.id,
+                "title": chat.title,
+                "created_at": chat.created_at,
+                "updated_at": chat.updated_at,
+                "message_count": len(chat.messages),
+                "total_tokens": chat.total_tokens,
+                "thinking_mode": chat.thinking_mode
+            }
+        
+        return JSONResponse({
+            "success": True, 
+            "messages": history,
+            "chat_info": chat_info
+        })
+    except Exception as e:
+        return JSONResponse({"success": False, "message": str(e)})
+
+# API очистки чата
+@app.post("/api/chat/{chat_id}/clear")
+async def clear_chat(chat_id: str):
+    try:
+        if chat_id in deltagpt.sessions:
+            deltagpt.sessions[chat_id].messages = []
+            deltagpt.sessions[chat_id].total_tokens = 0
+            deltagpt.save_chats()
+        return JSONResponse({"success": True})
+    except Exception as e:
+        return JSONResponse({"success": False, "message": str(e)})
+
+# API удаления чата
+@app.delete("/api/chat/{chat_id}")
+async def delete_chat(chat_id: str):
+    try:
+        if chat_id in deltagpt.sessions:
+            del deltagpt.sessions[chat_id]
+            deltagpt.save_chats()
+        return JSONResponse({"success": True})
+    except Exception as e:
+        return JSONResponse({"success": False, "message": str(e)})
 
 if __name__ == "__main__":
-    print("🚀 DELTAGPT REQUESTS запускается...")
-    print(f"🔑 Загружено {len(OPENROUTER_KEYS)} API ключей")
-    print("🎯 Модели: Gemini 2.0, Llama 3.1, WizardLM")
+    print("🚀 DELTAGPT SECURE запускается...")
+    print(f"🔑 Загружено {len(OPENROUTER_KEYS)} API ключей из Environment Variables")
+    print("🎯 Модели: GPT-4, GPT-4 Turbo, Gemini 2.0, Claude 3.5")
     print("🧠 Режимы: Быстрый / Глубокое / Креативный")
-    print("⚡ Используем: requests (прямые HTTP запросы)")
+    print("⚡ Используем: requests + балансировка нагрузки")
+    print("🔒 Ключи защищены: Environment Variables")
     print("🌐 Открой: http://localhost:8000")
+    print("🔧 Debug ключей: http://localhost:8000/debug/keys")
+    
+    if not OPENROUTER_KEYS:
+        print("❌ ВНИМАНИЕ: Нет API ключей!")
+        print("📝 Добавь в Environment Variables на Render:")
+        print("   OPENROUTER_KEY_1 = твой-ключ-1")
+        print("   OPENROUTER_KEY_2 = твой-ключ-2")
+    
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
-
-
-
