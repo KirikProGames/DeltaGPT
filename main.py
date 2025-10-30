@@ -24,7 +24,7 @@ app.add_middleware(
 
 # Мульти-ключевая система
 OPENROUTER_KEYS = [
-    "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",  # Твой новый ключ
+    "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",  # Твой новый ключ
     "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"   # Резервный ключ
 ]
 
@@ -468,3 +468,4 @@ if __name__ == "__main__":
     print("⚡ Используем: requests (прямые HTTP запросы)")
     print("🌐 Открой: http://localhost:8000")
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
