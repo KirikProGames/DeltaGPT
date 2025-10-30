@@ -11,7 +11,8 @@ import secrets
 from datetime import datetime
 from typing import List, Dict, Optional
 import uvicorn
-import httpx
+from openai import OpenAI
+import random
 
 app = FastAPI(title="DELTAGPT - Advanced AI Assistant")
 
@@ -22,8 +23,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# OpenRouter токены
-OPENROUTER_API_KEY = "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"
+# Мульти-ключевая система для распределения нагрузки
+OPENROUTER_KEYS = [
+    "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",  # Ключ 1
+    "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"   # Ключ 2
+]
 
 # Файлы хранения
 CHATS_FILE = "chats.json"
@@ -140,7 +144,24 @@ class DeltaGPT:
     def __init__(self):
         self.sessions: Dict[str, ChatSession] = {}
         self.user_manager = UserManager()
+        self.key_usage = {key: 0 for key in OPENROUTER_KEYS}  # Счетчик использования ключей
         self.load_chats()
+    
+    def get_client(self):
+        """Выбирает ключ с наименьшим использованием для балансировки нагрузки"""
+        if not OPENROUTER_KEYS:
+            raise Exception("No API keys available")
+        
+        # Выбираем ключ с минимальным использованием
+        min_key = min(self.key_usage, key=self.key_usage.get)
+        self.key_usage[min_key] += 1
+        
+        print(f"🔑 Используем ключ: {min_key[:20]}... (использований: {self.key_usage[min_key]})")
+        
+        return OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=min_key,
+        )
     
     def load_chats(self):
         try:
@@ -266,90 +287,64 @@ class DeltaGPT:
             
             openai_messages = [{"role": "system", "content": system_prompt}]
             
-            for msg in messages[-15:]:  # Увеличили контекст
+            for msg in messages[-15:]:
                 openai_messages.append({
                     "role": msg["role"],
                     "content": msg["content"]
                 })
             
-            # ПРИОРИТЕТНЫЕ МОДЕЛИ для безлимитного ключа
+            # Приоритетные модели для мульти-ключевой системы
             models_to_try = [
-                # Платные мощные модели
-                "openai/gpt-4",
-                "anthropic/claude-3.5-sonnet",
-                "google/gemini-2.0-flash-thinking-exp",
-                "meta-llama/llama-3.1-70b-instruct",
-                
-                # Бесплатные но стабильные
                 "google/gemini-2.0-flash-exp:free",
-                "anthropic/claude-3.5-sonnet:free", 
+                "anthropic/claude-3.5-sonnet:free",
                 "meta-llama/llama-3.1-8b-instruct:free",
-                "microsoft/wizardlm-2-8x22b:free"
+                "microsoft/wizardlm-2-8x22b:free",
+                "nvidia/nemotron-nano-12b-v2-vl:free",
+                "qwen/qwen-2.5-72b-instruct:free"
             ]
             
-            headers = {
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://deltagpt.onrender.com",
-                "X-Title": "DELTAGPT"
-            }
-            
-            async with httpx.AsyncClient() as client:
-                for model in models_to_try:
-                    try:
-                        print(f"🔄 Пробуем модель: {model}")
-                        
-                        payload = {
-                            "model": model,
-                            "messages": openai_messages,
-                            "max_tokens": settings["max_tokens"],
-                            "temperature": settings["temperature"],
-                            "stream": False
-                        }
-                        
-                        response = await client.post(
-                            "https://openrouter.ai/api/v1/chat/completions",
-                            headers=headers,
-                            json=payload,
-                            timeout=60.0  # Увеличили таймаут
-                        )
-                        
-                        print(f"📥 Ответ от {model}: {response.status_code}")
-                        
-                        if response.status_code == 200:
-                            data = response.json()
-                            assistant_message = data["choices"][0]["message"]["content"]
-                            tokens_used = data.get("usage", {}).get("total_tokens", self.estimate_tokens(assistant_message))
-                            
-                            if username:
-                                self.user_manager.update_user_stats(username, tokens_used)
-                            
-                            if chat_id:
-                                self.add_message(chat_id, "assistant", assistant_message, username, tokens_used)
-                            
-                            return {
-                                "success": True,
-                                "response": assistant_message,
-                                "model": model,
-                                "tokens_used": tokens_used,
-                                "context_length": len(messages),
-                                "thinking_mode": thinking_mode
-                            }
-                        else:
-                            error_text = response.text[:200] if response.text else "No error message"
-                            print(f"❌ Ошибка {response.status_code} от {model}: {error_text}")
-                            continue
-                            
-                    except httpx.TimeoutException:
-                        print(f"⏰ Таймаут для модели: {model}")
-                        continue
-                    except Exception as e:
-                        print(f"❌ Исключение для {model}: {str(e)}")
-                        continue
+            for model in models_to_try:
+                try:
+                    print(f"🔄 Пробуем модель: {model} (режим: {thinking_mode})")
+                    
+                    client = self.get_client()
+                    
+                    completion = client.chat.completions.create(
+                        extra_headers={
+                            "HTTP-Referer": "https://deltagpt.onrender.com",
+                            "X-Title": "DELTAGPT",
+                        },
+                        model=model,
+                        messages=openai_messages,
+                        max_tokens=settings["max_tokens"],
+                        temperature=settings["temperature"]
+                    )
+                    
+                    assistant_message = completion.choices[0].message.content
+                    tokens_used = completion.usage.total_tokens if completion.usage else self.estimate_tokens(assistant_message)
+                    
+                    if username:
+                        self.user_manager.update_user_stats(username, tokens_used)
+                    
+                    if chat_id:
+                        self.add_message(chat_id, "assistant", assistant_message, username, tokens_used)
+                    
+                    return {
+                        "success": True,
+                        "response": assistant_message,
+                        "model": model,
+                        "tokens_used": tokens_used,
+                        "context_length": len(messages),
+                        "thinking_mode": thinking_mode
+                    }
+                    
+                except Exception as e:
+                    print(f"❌ Модель {model} не сработала: {str(e)}")
+                    continue
             
             return {
                 "success": False,
-                "response": "❌ Все модели недоступны. Попробуйте позже или проверьте API ключ.",
+                "response": "❌ Все модели недоступны. Попробуйте позже.",
                 "model": "unknown",
                 "tokens_used": 0,
                 "context_length": len(messages)
@@ -521,34 +516,52 @@ async def delete_chat(chat_id: str):
     except Exception as e:
         return JSONResponse({"success": False, "message": str(e)})
 
-# Debug endpoint для проверки ключа
-@app.get("/debug/key")
-async def debug_key():
-    """Проверка работоспособности ключа"""
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                "https://openrouter.ai/api/v1/auth/key",
-                headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}"},
-                timeout=10.0
+# Debug endpoint для проверки ключей
+@app.get("/debug/keys")
+async def debug_keys():
+    """Проверка работоспособности всех ключей"""
+    results = []
+    
+    for i, key in enumerate(OPENROUTER_KEYS):
+        try:
+            client = OpenAI(
+                base_url="https://openrouter.ai/api/v1",
+                api_key=key,
             )
             
-            return {
-                "status_code": response.status_code,
-                "response": response.text,
-                "key_prefix": OPENROUTER_API_KEY[:20] + "..."
-            }
-    except Exception as e:
-        return {"error": str(e)}
+            # Простой тестовый запрос
+            completion = client.chat.completions.create(
+                model="google/gemini-2.0-flash-exp:free",
+                messages=[{"role": "user", "content": "Ответь 'Тест успешен'"}],
+                max_tokens=10
+            )
+            
+            results.append({
+                "key_index": i,
+                "key_prefix": key[:20] + "...",
+                "status": "✅ Работает",
+                "usage": deltagpt.key_usage.get(key, 0),
+                "response": completion.choices[0].message.content
+            })
+            
+        except Exception as e:
+            results.append({
+                "key_index": i,
+                "key_prefix": key[:20] + "...", 
+                "status": f"❌ Ошибка: {str(e)}",
+                "usage": deltagpt.key_usage.get(key, 0),
+                "response": None
+            })
+    
+    return {"results": results}
 
 if __name__ == "__main__":
-    print("🚀 DELTAGPT ULTRA запускается...")
-    print("🎯 Модели: GPT-4, Claude 3.5, Gemini 2.0")
-    print("🧠 Режимы: Быстрый / Глубокое / Креативный") 
-    print("💎 Безлимитный API ключ: АКТИВНО")
+    print("🚀 DELTAGPT MULTI-KEY запускается...")
+    print(f"🔑 Загружено {len(OPENROUTER_KEYS)} API ключей")
+    print("🎯 Модели: Gemini 2.0, Claude 3.5, Llama 3.1")
+    print("🧠 Режимы: Быстрый / Глубокое / Креативный")
+    print("⚖️ Балансировка нагрузки: АКТИВНО")
     print("💾 Сохранение чатов: АКТИВНО")
     print("🌐 Открой: http://localhost:8000")
-    print("🔧 Debug: http://localhost:8000/debug/key")
+    print("🔧 Debug ключей: http://localhost:8000/debug/keys")
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
-
